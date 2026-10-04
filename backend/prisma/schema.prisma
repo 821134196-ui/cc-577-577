@@ -1,0 +1,198 @@
+// 冷链保温箱清洗批次与门店交接系统 — 数据模型
+// SQLite 不使用原生 enum，状态一律用 String，业务层以 constants 约束。
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// 门店
+model Store {
+  id        Int      @id @default(autoincrement())
+  code      String   @unique
+  name      String
+  createdAt DateTime @default(now())
+
+  returns    ReturnRecord[]
+  handovers  Handover[]     @relation("HandoverTarget")
+  locEvents  LocationEvent[] @relation("LocStore")
+  currentBoxes Box[]        @relation("BoxCurrentStore")
+  lastBoxes    Box[]        @relation("BoxLastStore")
+}
+
+// 员工：清洗员 / 质检员 / 配送员
+model Staff {
+  id        Int      @id @default(autoincrement())
+  code      String   @unique
+  name      String
+  role      String // WASHER | INSPECTOR | DRIVER
+  createdAt DateTime @default(now())
+
+  washBatches WashBatch[]
+  inspections Inspection[]
+  handovers   Handover[]
+}
+
+// 保温箱（一箱一码）
+model Box {
+  id               Int      @id @default(autoincrement())
+  code             String   @unique // 箱号，全局唯一，重复建档必须被拒绝
+  spec             String   @default("标准保温箱 60L")
+  status           String   @default("IN_USE") // 见 BOX_STATUS
+  currentStoreId   Int? // null = 配送中心(DC)
+  lastStoreId      Int? // 上次使用门店
+  activeHandoverId Int? // 当前有效交接（调拨/签收期间唯一，一箱同时只能有一个有效交接）
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  currentStore Store?  @relation("BoxCurrentStore", fields: [currentStoreId], references: [id])
+  lastStore    Store?  @relation("BoxLastStore", fields: [lastStoreId], references: [id])
+  activeHandover Handover? @relation("ActiveHandover")
+
+  returns      ReturnRecord[]
+  washRecords  WashRecord[]
+  inspections  Inspection[]
+  handovers    Handover[]
+  dispositions Disposition[]
+  locEvents    LocationEvent[]
+
+  @@index([status])
+}
+
+// 回收登记
+model ReturnRecord {
+  id        Int      @id @default(autoincrement())
+  boxId     Int
+  storeId   Int
+  condition String // INTACT | DIRTY | DAMAGED
+  note      String?
+  scannedAt DateTime @default(now())
+
+  box   Box   @relation(fields: [boxId], references: [id])
+  store Store @relation(fields: [storeId], references: [id])
+
+  @@index([boxId])
+}
+
+// 清洗消毒批次
+model WashBatch {
+  id         Int      @id @default(autoincrement())
+  batchNo    String   @unique
+  washerId   Int
+  detergent  String   @default("含氯消毒液 200ppm")
+  status     String   @default("OPEN") // OPEN | FINISHED
+  startedAt  DateTime @default(now())
+  finishedAt DateTime?
+
+  washer     Staff         @relation(fields: [washerId], references: [id])
+  washRecords WashRecord[]
+  inspections Inspection[]
+}
+
+// 清洗记录：一箱入一批，重复扫描不能重复入批
+model WashRecord {
+  id        Int      @id @default(autoincrement())
+  batchId   Int
+  boxId     Int
+  washedAt  DateTime @default(now())
+
+  batch      WashBatch   @relation(fields: [batchId], references: [id])
+  box        Box        @relation(fields: [boxId], references: [id])
+  inspection Inspection?
+
+  @@unique([batchId, boxId])
+  @@index([boxId])
+}
+
+// 质检记录：一次清洗最多一条质检
+model Inspection {
+  id           Int      @id @default(autoincrement())
+  batchId      Int
+  washRecordId Int      @unique
+  boxId        Int
+  inspectorId  Int
+  residueFree  Boolean // 无清洗剂残留
+  dry          Boolean // 已干燥
+  intact       Boolean // 箱体完好
+  passed       Boolean
+  failReasons  String // 逗号分隔：RESIDUE | NOT_DRY | DAMAGE
+  note         String?
+  inspectedAt  DateTime @default(now())
+
+  batch      WashBatch   @relation(fields: [batchId], references: [id])
+  washRecord WashRecord @relation(fields: [washRecordId], references: [id])
+  box        Box        @relation(fields: [boxId], references: [id])
+  inspector  Staff      @relation(fields: [inspectorId], references: [id])
+
+  @@index([boxId])
+}
+
+// 门店交接单（出库/在途/签收/拒收）
+model Handover {
+  id            Int      @id @default(autoincrement())
+  handoverNo    String   @unique
+  boxId         Int
+  targetStoreId Int
+  driverId      Int
+  status        String   @default("IN_TRANSIT") // IN_TRANSIT | SIGNED | REJECTED
+  rejectReason  String?
+  // 有效交接期间 = boxId；签收/拒收后置空。唯一约束：一箱不能有两个同时有效的交接
+  activeBoxId   Int?     @unique
+  shippedAt     DateTime @default(now())
+  closedAt      DateTime?
+
+  box         Box    @relation(fields: [boxId], references: [id])
+  targetStore Store  @relation("HandoverTarget", fields: [targetStoreId], references: [id])
+  driver      Staff  @relation(fields: [driverId], references: [id])
+  activeOnBox Box?   @relation("ActiveHandover", fields: [activeBoxId], references: [id])
+
+  @@index([boxId])
+  @@index([status])
+}
+
+// 异常处理去向：箱体破裂 / 清洗剂残留 / 门店拒收
+model Disposition {
+  id        Int      @id @default(autoincrement())
+  boxId     Int
+  reason    String // DAMAGE | RESIDUE | NOT_DRY | STORE_REJECTED
+  action    String // SCRAP | REWASH | RETURN_DC
+  source    String // RETURN | INSPECTION | STORE_REJECT
+  note      String?
+  createdAt DateTime @default(now())
+
+  box Box @relation(fields: [boxId], references: [id])
+
+  @@index([boxId])
+}
+
+// 位置变化轨迹
+model LocationEvent {
+  id          Int      @id @default(autoincrement())
+  boxId       Int
+  action      String // RETURN | WASH | OUTBOUND | SIGN | REJECT | SCRAP
+  fromStoreId Int?
+  toStoreId   Int? // null 表示配送中心 / 在途
+  note        String?
+  createdAt   DateTime @default(now())
+
+  box   Box    @relation(fields: [boxId], references: [id])
+  store Store? @relation("LocStore", fields: [toStoreId], references: [id])
+
+  @@index([boxId])
+}
+
+// 本地模拟通知
+model AppNotification {
+  id        Int      @id @default(autoincrement())
+  level     String   @default("INFO") // INFO | WARN | ERROR
+  type      String
+  title     String
+  message   String
+  boxCode   String?
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
