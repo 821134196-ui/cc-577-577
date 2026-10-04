@@ -1,0 +1,157 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+// 门店 / 配送中心（isDC=true 表示配送中心）
+model Store {
+  id        String         @id @default(cuid())
+  code      String         @unique
+  name      String
+  isDC      Boolean        @default(false)
+  users     User[]
+  boxesHere Box[]          @relation("CurrentStore")
+  lastUsed  Box[]          @relation("LastUsedStore")
+  returns   ReturnRecord[]
+  shipments Shipment[]
+}
+
+// 人员：CLEANER 清洗员 / QC 质检员 / DRIVER 配送员 / CLERK 门店店员 / ADMIN 管理员
+model User {
+  id          String      @id @default(cuid())
+  name        String
+  role        String
+  storeId     String?
+  store       Store?      @relation(fields: [storeId], references: [id])
+  washBatches WashBatch[]
+  qcRecords   QcRecord[]
+  shipments   Shipment[]
+}
+
+// 保温箱
+// status: AT_STORE 在门店 / RETURNED 已退回待清洗 / WASHING 清洗中 / PENDING_QC 待质检
+//         AVAILABLE 可用 / IN_TRANSIT 出库在途 / QUARANTINE 隔离维修 / SCRAPPED 已报废
+model Box {
+  id                String         @id @default(cuid())
+  code              String         @unique
+  status            String
+  condition         String         @default("GOOD") // GOOD 完好 / CRACKED 箱体破裂 / DIRTY 污渍
+  currentStoreId    String?
+  currentStore      Store?         @relation("CurrentStore", fields: [currentStoreId], references: [id])
+  currentShipmentId String?
+  currentShipment   Shipment?      @relation("BoxCurrentShipment", fields: [currentShipmentId], references: [id])
+  lastUsedStoreId   String?
+  lastUsedStore     Store?         @relation("LastUsedStore", fields: [lastUsedStoreId], references: [id])
+  createdAt         DateTime       @default(now())
+  returns           ReturnRecord[]
+  washItems         WashItem[]
+  qcRecords         QcRecord[]
+  shipmentItems     ShipmentItem[]
+  events            BoxEvent[]
+}
+
+// 门店退回登记
+model ReturnRecord {
+  id        String   @id @default(cuid())
+  boxId     String
+  box       Box      @relation(fields: [boxId], references: [id])
+  storeId   String
+  store     Store    @relation(fields: [storeId], references: [id])
+  condition String // GOOD / CRACKED / DIRTY
+  note      String?
+  createdAt DateTime @default(now())
+}
+
+// 清洗/消毒批次
+model WashBatch {
+  id          String     @id @default(cuid())
+  code        String     @unique
+  cleanerId   String
+  cleaner     User       @relation(fields: [cleanerId], references: [id])
+  detergent   String
+  status      String     @default("OPEN") // OPEN 进行中 / COMPLETED 已完成
+  createdAt   DateTime   @default(now())
+  completedAt DateTime?
+  items       WashItem[]
+  qcRecords   QcRecord[]
+}
+
+model WashItem {
+  id      String    @id @default(cuid())
+  batchId String
+  batch   WashBatch @relation(fields: [batchId], references: [id])
+  boxId   String
+  box     Box       @relation(fields: [boxId], references: [id])
+  addedAt DateTime  @default(now())
+
+  @@unique([batchId, boxId])
+}
+
+// 质检记录；disposition: REWASH 退回重洗 / REPAIR 隔离维修 / SCRAP 报废
+model QcRecord {
+  id          String    @id @default(cuid())
+  boxId       String
+  box         Box       @relation(fields: [boxId], references: [id])
+  batchId     String
+  batch       WashBatch @relation(fields: [batchId], references: [id])
+  inspectorId String
+  inspector   User      @relation(fields: [inspectorId], references: [id])
+  residueFree Boolean
+  dried       Boolean
+  result      String // PASS / FAIL
+  failReason  String?
+  disposition String?
+  createdAt   DateTime  @default(now())
+}
+
+// 调拨交接单（配送中心 -> 门店）
+model Shipment {
+  id          String         @id @default(cuid())
+  code        String         @unique
+  toStoreId   String
+  toStore     Store          @relation(fields: [toStoreId], references: [id])
+  driverId    String
+  driver      User           @relation(fields: [driverId], references: [id])
+  status      String         @default("IN_TRANSIT") // IN_TRANSIT / COMPLETED / PARTIAL
+  createdAt   DateTime       @default(now())
+  completedAt DateTime?
+  items       ShipmentItem[]
+  boxes       Box[]          @relation("BoxCurrentShipment")
+}
+
+model ShipmentItem {
+  id           String    @id @default(cuid())
+  shipmentId   String
+  shipment     Shipment  @relation(fields: [shipmentId], references: [id])
+  boxId        String
+  box          Box       @relation(fields: [boxId], references: [id])
+  status       String    @default("PENDING") // PENDING / SIGNED / REJECTED
+  signedAt     DateTime?
+  rejectReason String?
+
+  @@unique([shipmentId, boxId])
+}
+
+// 箱子全生命周期事件流水
+model BoxEvent {
+  id        String   @id @default(cuid())
+  boxId     String
+  box       Box      @relation(fields: [boxId], references: [id])
+  type      String
+  detail    String
+  actor     String?
+  createdAt DateTime @default(now())
+}
+
+// 本地模拟通知
+model Notification {
+  id        String   @id @default(cuid())
+  audience  String // dc / qc / store:ST-001 ...
+  message   String
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+}

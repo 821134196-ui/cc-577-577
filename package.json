@@ -1,0 +1,23 @@
+{
+  "name": "coldchain-box-system",
+  "version": "1.0.0",
+  "private": true,
+  "description": "冷链保温箱清洗批次与门店交接系统（NestJS + Prisma + SQLite + React）",
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "setup": "npm install && npm run prisma:generate && npm run prisma:push && npm run seed",
+    "prisma:generate": "npm -w backend run prisma:generate",
+    "prisma:push": "npm -w backend run prisma:push",
+    "seed": "npm -w backend run seed",
+    "build": "npm -w backend run build",
+    "dev": "concurrently -k -n backend,frontend -c blue,green \"npm -w backend run start:dev\" \"npm -w frontend run dev\"",
+    "start": "npm run setup && npm run dev",
+    "demo": "npm -w backend run demo"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.1"
+  }
+}
